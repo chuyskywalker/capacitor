@@ -1,22 +1,22 @@
 package main
 
 import (
-	"net/http"
-	"fmt"
-	"log"
-	"io/ioutil"
-	"github.com/nu7hatch/gouuid"
-	"time"
-	"runtime"
 	"bytes"
+	"fmt"
+	"github.com/nu7hatch/gouuid"
+	"io/ioutil"
+	"log"
+	"net/http"
+	"runtime"
+	"time"
 )
 
 type RequestMessage struct {
-	URL string
-	Method string
-	Source string
+	URL     string
+	Method  string
+	Source  string
 	Headers http.Header
-	Body []byte
+	Body    []byte
 }
 
 // why not just []string of urls? In case we need meta data for these later on.
@@ -25,7 +25,7 @@ type EventTarget struct {
 }
 
 var targets = map[string][]EventTarget{
-    "registration": []EventTarget{
+	"registration": []EventTarget{
 		EventTarget{"http://127.0.0.1:8001/brokenville"},
 		//EventTarget{"http://127.0.0.1:8000/registration2", 2, time.Duration(1)},
 	},
@@ -50,11 +50,11 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	body, _ := ioutil.ReadAll(r.Body)
 
 	requestObj := RequestMessage{
-		URL: r.RequestURI,
-		Method: r.Method,
-		Source: r.RemoteAddr,
+		URL:     r.RequestURI,
+		Method:  r.Method,
+		Source:  r.RemoteAddr,
 		Headers: r.Header,
-		Body: body,
+		Body:    body,
 	}
 
 	// get a UUID for this transaction
@@ -102,25 +102,25 @@ func sendEvent(u5 *uuid.UUID, queue string, eventTarget EventTarget, req Request
 		}
 
 		// max duration, ever
-		if time.Since(start) > time.Second * 60 {
+		if time.Since(start) > time.Second*60 {
 			break
 		}
 
 		// oops, didn't work; have a pause and try again in a bit
 		time.Sleep(sleepDuration)
 		// slowly ramp up our sleep interval, shall we?
-		sleepDuration = time.Duration(float64(sleepDuration) * 1.5);
+		sleepDuration = time.Duration(float64(sleepDuration) * 1.5)
 	}
-    elapsed := time.Since(start)
+	elapsed := time.Since(start)
 
 	delchan <- CounterKey{queue, eventTarget.Url}
 	log.Printf("id=%s queue=%s msg=%s url=%s, attempts=%v, sent=%v, duration=%.3f\n",
-		u5, queue, "endsend", eventTarget.Url, attempts, sent, elapsed.Seconds() * 1e3)
+		u5, queue, "endsend", eventTarget.Url, attempts, sent, elapsed.Seconds()*1e3)
 }
 
 type CounterKey struct {
 	Queue string
-	Url string
+	Url   string
 }
 
 var counters = make(map[CounterKey]uint64)
@@ -138,7 +138,7 @@ func main() {
 	}
 
 	// goroutine to keep the counters up-to-date
-	go func(){
+	go func() {
 		for {
 			// watch each channel as items rolls in and modify the counters as needed
 			select {
@@ -151,7 +151,7 @@ func main() {
 	}()
 
 	// A dumb goroutine to watch memory usage and counter metrics
-	go func(){
+	go func() {
 		var mem runtime.MemStats
 		for {
 			runtime.ReadMemStats(&mem)
