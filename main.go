@@ -23,6 +23,7 @@ type EventTarget struct {
 // Our object use to repeat events.
 // todo: should I just pass the http.Request? Is that thread safe?
 type RequestMessage struct {
+	UUID    string
 	URL     string
 	Method  string
 	Source  string
@@ -32,21 +33,22 @@ type RequestMessage struct {
 
 func handler(w http.ResponseWriter, r *http.Request) {
 
-	body, _ := ioutil.ReadAll(r.Body)
-
-	requestObj := RequestMessage{
-		URL:     r.RequestURI,
-		Method:  r.Method,
-		Source:  r.RemoteAddr,
-		Headers: r.Header,
-		Body:    body,
-	}
-
 	// get a UUID for this transaction
 	u5, err := uuid.NewV4()
 	if err != nil {
 		fmt.Println("error:", err)
 		return
+	}
+
+	body, _ := ioutil.ReadAll(r.Body)
+
+	requestObj := RequestMessage{
+		UUID:    u5.String(),
+		URL:     r.RequestURI,
+		Method:  r.Method,
+		Source:  r.RemoteAddr,
+		Headers: r.Header,
+		Body:    body,
 	}
 
 	queue := requestObj.URL[1:]
@@ -55,16 +57,23 @@ func handler(w http.ResponseWriter, r *http.Request) {
 
 	if eventTargets, ok := targets[queue]; ok {
 		for _, eventTarget := range eventTargets {
-			//log.Printf("id=%s queue=%s msg=%s url=%s\n", u5, queue, "sendingto", eventTarget.Url)
-			addchan <- CounterKey{queue, eventTarget.Url}
-			go sendEvent(u5, queue, eventTarget, requestObj)
+			qu := QueueUrl{queue, eventTarget.Url}
+			addchan <- qu
+			// this select/case/default is a non-blocking chan push
+			select {
+			// todo: maybe circular chans here? IE: throw away oldest items when the chan is full.
+			case sendPool[qu].RequestChan <- requestObj:
+			default:
+				log.Printf("id=%s queue=%s msg=%s\n", u5, queue, "queue full!")
+			}
 		}
 	} else {
 		log.Printf("id=%s queue=%s msg=%s\n", u5, queue, "no such queue")
+		log.Printf("queues=%v\n", targets)
 	}
 }
 
-func sendEvent(u5 *uuid.UUID, queue string, eventTarget EventTarget, req RequestMessage) {
+func sendEvent(qu QueueUrl, req RequestMessage) {
 	start := time.Now()
 	var sent bool
 	sent = false
@@ -76,14 +85,14 @@ func sendEvent(u5 *uuid.UUID, queue string, eventTarget EventTarget, req Request
 		client := &http.Client{
 			Timeout: 10 * time.Second,
 		}
-		httpReq, _ := http.NewRequest(req.Method, eventTarget.Url, bytes.NewBuffer(req.Body))
+		httpReq, _ := http.NewRequest(req.Method, qu.Url, bytes.NewBuffer(req.Body))
 		//httpReq.Header = req.Headers
 		for headerName, values := range req.Headers {
 			for _, value := range values {
 				httpReq.Header.Add(headerName, value)
 			}
 		}
-		httpReq.Header.Set("X-Wsq-Id", (*u5).String())
+		httpReq.Header.Set("X-Wsq-Id", req.UUID)
 		resp, err := client.Do(httpReq)
 
 		if err == nil && resp.StatusCode == 200 {
@@ -105,16 +114,16 @@ func sendEvent(u5 *uuid.UUID, queue string, eventTarget EventTarget, req Request
 	elapsed := time.Since(start)
 
 	if sent {
-		deltchan <- CounterKey{queue, eventTarget.Url}
+		deltchan <- qu
 	} else {
-		delfchan <- CounterKey{queue, eventTarget.Url}
+		delfchan <- qu
 	}
 
 	log.Printf("id=%s queue=%s msg=%s url=%s attempts=%v sent=%v duration=%.3f\n",
-		u5, queue, "endsend", eventTarget.Url, attempts, sent, elapsed.Seconds()*1e3)
+		req.UUID, qu.Queue, "endsend", qu.Url, attempts, sent, elapsed.Seconds()*1e3)
 }
 
-type CounterKey struct {
+type QueueUrl struct {
 	Queue string
 	Url   string
 }
@@ -126,12 +135,36 @@ type CounterVals struct {
 	Failure uint64
 }
 
-var counters = make(map[CounterKey]CounterVals)
-var addchan = make(chan CounterKey, 100)
-var deltchan = make(chan CounterKey, 100)
-var delfchan = make(chan CounterKey, 100)
+var counters = make(map[QueueUrl]CounterVals)
+var addchan = make(chan QueueUrl, 100)
+var deltchan = make(chan QueueUrl, 100)
+var delfchan = make(chan QueueUrl, 100)
 
+type Worker struct {
+  QueueUrl    QueueUrl
+  RequestChan chan RequestMessage
+  QuitChan    chan bool
+}
 
+func (w Worker) Start() {
+	go func() {
+		for {
+			select {
+			case work := <-w.RequestChan:
+				// Receive a work request.
+				fmt.Printf("start worker %v got %v\n", w.QueueUrl, work.UUID)
+				sendEvent(w.QueueUrl, work)
+				fmt.Printf(" done worker %v got %v\n", w.QueueUrl, work.UUID)
+			case <-w.QuitChan:
+				// We have been asked to stop.
+				fmt.Printf("worker %v stopping\n", w.QueueUrl)
+				return
+			}
+		}
+	}()
+}
+
+var sendPool = make(map[QueueUrl]Worker)
 
 var targets TargetList
 
@@ -141,7 +174,8 @@ func main() {
 	configId := flag.String("config", "default", "Which stanza of the config to use")
 	flag.Parse()
 
-	targets, ok := allTargets[*configId]
+	var ok bool
+	targets, ok = allTargets[*configId]
 	if !ok {
 		panic("Could not load expected configuration")
 	}
@@ -151,7 +185,14 @@ func main() {
 	// reporting 0 immediately for stat collection purposes.
 	for queue, eventTargets := range targets {
 		for _, eventTarget := range eventTargets {
-			counters[CounterKey{queue, eventTarget.Url}] = CounterVals{0,0,0,0}
+			qu := QueueUrl{queue, eventTarget.Url}
+			counters[qu] = CounterVals{0,0,0,0}
+			sendPool[qu] = Worker{
+				QueueUrl: qu,
+				RequestChan: make(chan RequestMessage, 10000),
+				QuitChan: make(chan bool),
+			}
+			sendPool[qu].Start()
 		}
 	}
 
