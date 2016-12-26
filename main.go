@@ -18,7 +18,10 @@ type TargetList map[string][]EventTarget
 
 // why not just []string of urls? In case we need meta data for these later on.
 type EventTarget struct {
-	Url string
+	// Endpoint target URL
+	Url       string
+	// How much buffer should we allocate?
+	BufferLen uint64
 }
 
 // Our object used to repeat events.
@@ -169,9 +172,9 @@ var delfchan = make(chan QueueUrl, 100)
 var dellchan = make(chan QueueUrl, 100)
 
 type Worker struct {
-  QueueUrl    QueueUrl
-  RequestChan chan RequestMessage
-  QuitChan    chan bool
+	QueueUrl    QueueUrl
+	RequestChan chan RequestMessage
+	QuitChan    chan bool
 }
 
 func (w Worker) Start() {
@@ -216,9 +219,12 @@ func main() {
 		for _, eventTarget := range eventTargets {
 			qu := QueueUrl{queue, eventTarget.Url}
 			counters[qu] = CounterVals{0,0,0,0,0}
+			if eventTarget.BufferLen <= 0 {
+				panic("Buffer length must be > 0")
+			}
 			sendPool[qu] = Worker{
 				QueueUrl: qu,
-				RequestChan: make(chan RequestMessage, 15),
+				RequestChan: make(chan RequestMessage, eventTarget.BufferLen),
 				QuitChan: make(chan bool),
 			}
 			sendPool[qu].Start()
@@ -277,6 +283,7 @@ func main() {
 					"failure": cVals.Failure,
 					"lost": cVals.Lost,
 					"chanlen": len(sendPool[cKeys].RequestChan),
+					"chanmax": cap(sendPool[cKeys].RequestChan),
 				}).Info("metrics-queue")
 			}
 			time.Sleep(time.Second * 5)

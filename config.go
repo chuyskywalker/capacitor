@@ -8,31 +8,23 @@ package main
 var allTargets = map[string]TargetList{
 	"default": {
 		"registration": {
-			{"http://127.0.0.1:8001/brokenville"},
-			{"http://127.0.0.1:8000/ep"},
+			{"http://127.0.0.1:8001/brokenville", 1024},
+			{"http://127.0.0.1:8000/ep", 1024},
 		},
 		"score-pulled": {
-			{"http://marketing.service.consul/events/score-pull"},
-			{"http://metrics.service.consul/event-post?eventId=score-pull"},
+			{"http://marketing.service.consul/events/score-pull", 1024},
+			{"http://metrics.service.consul/event-post?eventId=score-pull", 1024},
 		},
 		"clicked-ad": {
-			{"http://marketing.service.consul/events/adclick"},
-			{"http://sales.service.consul/event.php?id=clickedAd"},
+			{"http://marketing.service.consul/events/adclick", 1024},
+			{"http://sales.service.consul/event.php?id=clickedAd", 1024},
 		},
 	},
 	"dev": {
-		//"registration": {{"http://127.0.0.1:9000/brokenville"}},
-		"r0": {{"http://127.0.0.1:9000/brokenville"}},
-		"r1": {{"http://127.0.0.1:9000/brokenville"}},
-		"r2": {{"http://127.0.0.1:9000/brokenville"}},
-		"r3": {{"http://127.0.0.1:9000/brokenville"}},
-		"r4": {{"http://127.0.0.1:9000/brokenville"}},
-		"r5": {{"http://127.0.0.1:9000/brokenville"}},
-		"r6": {{"http://127.0.0.1:9000/brokenville"}},
-		"r7": {{"http://127.0.0.1:9000/brokenville"}},
-		"r8": {{"http://127.0.0.1:9000/brokenville"}},
-		"r9": {{"http://127.0.0.1:9000/brokenville"}},
-		//"loopback": {{"http://127.0.0.1:8000/non-existant"}},
+		"demo": {
+			{"http://127.0.0.1:8001/event-inbound", 10},
+			{"http://127.0.0.1:8002/event-inbound", 20},
+		},
 	},
 }
 
