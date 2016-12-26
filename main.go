@@ -5,13 +5,14 @@ import (
 	"fmt"
 	"github.com/nu7hatch/gouuid"
 	"io/ioutil"
-	"log"
+	//"log"
+    log "github.com/Sirupsen/logrus"
 	"net/http"
 	"runtime"
 	"time"
 	"flag"
+	"io"
 )
-
 
 type TargetList map[string][]EventTarget
 
@@ -20,8 +21,9 @@ type EventTarget struct {
 	Url string
 }
 
-// Our object use to repeat events.
+// Our object used to repeat events.
 // todo: should I just pass the http.Request? Is that thread safe?
+// 		 I feel like the body being an ioreader is kind of a problem -- so most likely not
 type RequestMessage struct {
 	UUID    string
 	URL     string
@@ -31,7 +33,12 @@ type RequestMessage struct {
 	Body    []byte
 }
 
-func handler(w http.ResponseWriter, r *http.Request) {
+func defaultHandler(w http.ResponseWriter, r *http.Request) {
+	//w.WriteHeader(http.StatusNotFound)
+	w.Write([]byte("No such event endpoint"))
+}
+
+func handleIncomingEvent(w http.ResponseWriter, r *http.Request) {
 
 	// get a UUID for this transaction
 	u5, err := uuid.NewV4()
@@ -55,25 +62,23 @@ func handler(w http.ResponseWriter, r *http.Request) {
 
 	fmt.Fprintf(w, "{ \"id\":\"%s\" }\n", u5) // to lazy to do a real json.Marshal, etc
 
-	if eventTargets, ok := targets[queue]; ok {
-		for _, eventTarget := range eventTargets {
-			qu := QueueUrl{queue, eventTarget.Url}
-			addchan <- qu
-			// this select/case/default is a non-blocking chan push
-			select {
-			// todo: maybe circular chans here? IE: throw away oldest items when the chan is full.
-			case sendPool[qu].RequestChan <- requestObj:
-			default:
-				log.Printf("id=%s queue=%s msg=%s\n", u5, queue, "queue full!")
-			}
+	for _, eventTarget := range targets[queue] {
+		qu := QueueUrl{queue, eventTarget.Url}
+		addchan <- qu
+		// this select/case/default is a non-blocking chan push
+		// todo: maybe circular chans here? IE: throw away oldest items when the chan is full.
+		select {
+		case sendPool[qu].RequestChan <- requestObj:
+		default:
+			log.WithFields(log.Fields{
+				"id": u5,
+				"queue": queue,
+			}).Info("queue-full")
 		}
-	} else {
-		log.Printf("id=%s queue=%s msg=%s\n", u5, queue, "no such queue")
-		log.Printf("queues=%v\n", targets)
 	}
 }
 
-func sendEvent(qu QueueUrl, req RequestMessage) {
+func sendEvent(client *http.Client, qu QueueUrl, req RequestMessage) {
 	start := time.Now()
 	var sent bool
 	sent = false
@@ -81,12 +86,7 @@ func sendEvent(qu QueueUrl, req RequestMessage) {
 	sleepDuration := time.Millisecond * 100
 	for {
 		attempts++
-
-		client := &http.Client{
-			Timeout: 10 * time.Second,
-		}
 		httpReq, _ := http.NewRequest(req.Method, qu.Url, bytes.NewBuffer(req.Body))
-		//httpReq.Header = req.Headers
 		for headerName, values := range req.Headers {
 			for _, value := range values {
 				httpReq.Header.Add(headerName, value)
@@ -95,21 +95,32 @@ func sendEvent(qu QueueUrl, req RequestMessage) {
 		httpReq.Header.Set("X-Wsq-Id", req.UUID)
 		resp, err := client.Do(httpReq)
 
+		if err == nil {
+			// get rid of the response, we don't care
+			// but we do need to clean it out, so the client can reuse the same connection
+			io.Copy(ioutil.Discard, resp.Body)
+			resp.Body.Close()
+		}
+
 		if err == nil && resp.StatusCode == 200 {
 			sent = true
 			break
 		}
 
 		// max duration, ever
-		if time.Since(start) > time.Second*60 {
+		if time.Since(start) > time.Second*10 {
 			break
 		}
 
 		// oops, didn't work; have a pause and try again in a bit
 		time.Sleep(sleepDuration)
-		// slowly ramp up our sleep interval, shall we?
-		// todo: if sleepDuration > N value, don't increase it again -- apply a cap
-		sleepDuration = time.Duration(float64(sleepDuration) * 1.5)
+
+		// slowly ramp up our sleep interval, shall we? But cap at a minute, thanks.
+		if sleepDuration < time.Duration(time.Minute) {
+			sleepDuration = time.Duration(float64(sleepDuration) * 1.5)
+		} else {
+			sleepDuration = time.Duration(time.Minute)
+		}
 	}
 	elapsed := time.Since(start)
 
@@ -119,8 +130,14 @@ func sendEvent(qu QueueUrl, req RequestMessage) {
 		delfchan <- qu
 	}
 
-	log.Printf("id=%s queue=%s msg=%s url=%s attempts=%v sent=%v duration=%.3f\n",
-		req.UUID, qu.Queue, "endsend", qu.Url, attempts, sent, elapsed.Seconds()*1e3)
+	log.WithFields(log.Fields{
+		"id": req.UUID,
+		"queue": qu.Queue,
+		"url": qu.Url,
+		"attempts": attempts,
+		"sent": sent,
+		"duration": elapsed.Seconds() * 1e3, /* ms hack */
+	}).Info("relay-end")
 }
 
 type QueueUrl struct {
@@ -148,18 +165,15 @@ type Worker struct {
 
 func (w Worker) Start() {
 	go func() {
+		client := &http.Client{
+			// todo: reasonable default?
+			Timeout: 10 * time.Second,
+			// no cookies, please
+			Jar: nil,
+		}
 		for {
-			select {
-			case work := <-w.RequestChan:
-				// Receive a work request.
-				fmt.Printf("start worker %v got %v\n", w.QueueUrl, work.UUID)
-				sendEvent(w.QueueUrl, work)
-				fmt.Printf(" done worker %v got %v\n", w.QueueUrl, work.UUID)
-			case <-w.QuitChan:
-				// We have been asked to stop.
-				fmt.Printf("worker %v stopping\n", w.QueueUrl)
-				return
-			}
+			work := <-w.RequestChan
+			sendEvent(client, w.QueueUrl, work)
 		}
 	}()
 }
@@ -169,7 +183,11 @@ var sendPool = make(map[QueueUrl]Worker)
 var targets TargetList
 
 func main() {
-	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+	//log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+    log.SetFormatter(&log.TextFormatter{
+		FullTimestamp: true,
+		TimestampFormat: time.RFC3339Nano,
+	})
 
 	configId := flag.String("config", "default", "Which stanza of the config to use")
 	flag.Parse()
@@ -226,19 +244,35 @@ func main() {
 		var mem runtime.MemStats
 		for {
 			runtime.ReadMemStats(&mem)
-			log.Printf("metrics=ram alloc=%v totalalloc=%v heapalloc=%v heapsys=%v routines=%v\n",
-				mem.Alloc, mem.TotalAlloc, mem.HeapAlloc, mem.HeapSys, runtime.NumGoroutine())
+			log.WithFields(log.Fields{
+				"mem.Alloc": mem.Alloc,
+				"mem.TotalAlloc": mem.TotalAlloc,
+				"mem.HeapAlloc": mem.HeapAlloc,
+				"mem.HeapSys": mem.HeapSys,
+				"runtime.NumGoroutine": runtime.NumGoroutine(),
+			}).Info("metrics-mem")
 			for cKeys, cVals:= range counters {
-				log.Printf("metrics=queues queue=%s endpoint=%s current=%d total=%d success=%d failure=%d\n",
-					cKeys.Queue, cKeys.Url, cVals.Current, cVals.Total, cVals.Success, cVals.Failure)
+				log.WithFields(log.Fields{
+					"queue": cKeys.Queue,
+					"url": cKeys.Url,
+					"current": cVals.Current,
+					"total": cVals.Total,
+					"success": cVals.Success,
+					"failure": cVals.Failure,
+					"chanlen": len(sendPool[cKeys].RequestChan),
+				}).Info("metrics-queue")
 			}
 			time.Sleep(time.Second * 5)
 		}
 	}()
 
 	// Oh, hey, there's the webserver!
-	fmt.Println("Starting server")
-	http.HandleFunc("/", handler)
+	log.Info("starting server")
+	for queue, _ := range targets {
+		log.Info("registering queue @ /" + queue)
+		http.HandleFunc("/" + queue, handleIncomingEvent)
+	}
+	http.HandleFunc("/", defaultHandler)
 	err := http.ListenAndServe(":8000", nil)
 	if err != nil {
 		log.Fatal("ListenAndServe: ", err)
