@@ -38,7 +38,7 @@ Now, let's push out an event that the two services are listening for:
 curl -s -X POST -d "A demo event!" http://127.0.0.1:8000/demo
 ```
 
-Curl should return something like `{ "id":"e94b1336-3427-432d-59df-6dc0ee3caf22" }` and in both terminal 1 *and** 2 you should see something like `time="<timestamp here>" level=info msg="got event" content="A demo event!" id=e94b1336-3427-432d-59df-6dc0ee3caf22 len=13`.
+Curl should return something like `{ "id":"e94b1336-3427-432d-59df-6dc0ee3caf22" }` and in both terminal 1 **and** 2 you should see something like `time="<timestamp here>" level=info msg="got event" content="A demo event!" id=e94b1336-3427-432d-59df-6dc0ee3caf22 len=13`.
 
 Congratulations, you're now publishing events!
 
