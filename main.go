@@ -66,14 +66,23 @@ func handleIncomingEvent(w http.ResponseWriter, r *http.Request) {
 		qu := QueueUrl{queue, eventTarget.Url}
 		addchan <- qu
 		// this select/case/default is a non-blocking chan push
-		// todo: maybe circular chans here? IE: throw away oldest items when the chan is full.
 		select {
 		case sendPool[qu].RequestChan <- requestObj:
 		default:
-			log.WithFields(log.Fields{
-				"id": u5,
-				"queue": queue,
-			}).Info("queue-full")
+			// metricize that we're dropping messages
+			dellchan <- qu
+			// kill off the oldests, not-in-flight message
+			<-sendPool[qu].RequestChan
+			// we attempt to send the current message one last time, but this it no guaranteed to work
+			select {
+			case sendPool[qu].RequestChan <- requestObj:
+			default:
+				log.WithFields(log.Fields{
+					"id": u5,
+					"queue": queue,
+					"url": eventTarget.Url,
+				}).Info("queue-full-message-lost")
+			}
 		}
 	}
 }
@@ -150,12 +159,14 @@ type CounterVals struct {
 	Total   uint64
 	Success uint64
 	Failure uint64
+	Lost    uint64
 }
 
 var counters = make(map[QueueUrl]CounterVals)
 var addchan = make(chan QueueUrl, 100)
 var deltchan = make(chan QueueUrl, 100)
 var delfchan = make(chan QueueUrl, 100)
+var dellchan = make(chan QueueUrl, 100)
 
 type Worker struct {
   QueueUrl    QueueUrl
@@ -204,10 +215,10 @@ func main() {
 	for queue, eventTargets := range targets {
 		for _, eventTarget := range eventTargets {
 			qu := QueueUrl{queue, eventTarget.Url}
-			counters[qu] = CounterVals{0,0,0,0}
+			counters[qu] = CounterVals{0,0,0,0,0}
 			sendPool[qu] = Worker{
 				QueueUrl: qu,
-				RequestChan: make(chan RequestMessage, 10000),
+				RequestChan: make(chan RequestMessage, 15),
 				QuitChan: make(chan bool),
 			}
 			sendPool[qu].Start()
@@ -235,6 +246,11 @@ func main() {
 				tmp.Current--
 				tmp.Failure++
 				counters[control] = tmp
+			case control := <-dellchan:
+				tmp := counters[control]
+				tmp.Current--
+				tmp.Lost++
+				counters[control] = tmp
 			}
 		}
 	}()
@@ -259,6 +275,7 @@ func main() {
 					"total": cVals.Total,
 					"success": cVals.Success,
 					"failure": cVals.Failure,
+					"lost": cVals.Lost,
 					"chanlen": len(sendPool[cKeys].RequestChan),
 				}).Info("metrics-queue")
 			}
