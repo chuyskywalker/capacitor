@@ -7,31 +7,31 @@ package main
  */
 
 import (
+	log "github.com/Sirupsen/logrus"
 	"io/ioutil"
-	"time"
-    log "github.com/Sirupsen/logrus"
 	"net/http"
 	"os"
+	"time"
 )
 
 func getEvent(w http.ResponseWriter, r *http.Request) {
 	body, _ := ioutil.ReadAll(r.Body)
 	log.WithFields(log.Fields{
-		"len": r.ContentLength,
+		"len":     r.ContentLength,
 		"content": string(body),
-		"id": r.Header.Get("X-Wsq-Id"),
+		"id":      r.Header.Get("X-Wsq-Id"),
 	}).Info("got event")
 	w.Write([]byte("Thanks!"))
 }
 
 func main() {
-    log.SetFormatter(&log.TextFormatter{
-		FullTimestamp: true,
+	log.SetFormatter(&log.TextFormatter{
+		FullTimestamp:   true,
 		TimestampFormat: time.RFC3339Nano,
 	})
 	log.Info("starting server")
 	http.HandleFunc("/", getEvent)
-	err := http.ListenAndServe(":" + os.Args[1], nil)
+	err := http.ListenAndServe(":"+os.Args[1], nil)
 	if err != nil {
 		log.Fatal("ListenAndServe: ", err)
 	}

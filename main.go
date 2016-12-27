@@ -6,12 +6,12 @@ import (
 	"github.com/nu7hatch/gouuid"
 	"io/ioutil"
 	//"log"
-    log "github.com/Sirupsen/logrus"
+	"flag"
+	log "github.com/Sirupsen/logrus"
+	"io"
 	"net/http"
 	"runtime"
 	"time"
-	"flag"
-	"io"
 )
 
 type TargetList map[string][]EventTarget
@@ -19,7 +19,7 @@ type TargetList map[string][]EventTarget
 // why not just []string of urls? In case we need meta data for these later on.
 type EventTarget struct {
 	// Endpoint target URL
-	Url       string
+	Url string
 	// How much buffer should we allocate?
 	BufferLen uint64
 }
@@ -81,9 +81,9 @@ func handleIncomingEvent(w http.ResponseWriter, r *http.Request) {
 			case sendPool[qu].RequestChan <- requestObj:
 			default:
 				log.WithFields(log.Fields{
-					"id": u5,
+					"id":    u5,
 					"queue": queue,
-					"url": eventTarget.Url,
+					"url":   eventTarget.Url,
 				}).Info("queue-full-message-lost")
 			}
 		}
@@ -143,11 +143,11 @@ func sendEvent(client *http.Client, qu QueueUrl, req RequestMessage) {
 	}
 
 	log.WithFields(log.Fields{
-		"id": req.UUID,
-		"queue": qu.Queue,
-		"url": qu.Url,
+		"id":       req.UUID,
+		"queue":    qu.Queue,
+		"url":      qu.Url,
 		"attempts": attempts,
-		"sent": sent,
+		"sent":     sent,
 		"duration": elapsed.Seconds() * 1e3, /* ms hack */
 	}).Info("relay-end")
 }
@@ -198,8 +198,8 @@ var targets TargetList
 
 func main() {
 	//log.SetFlags(log.LstdFlags | log.Lmicroseconds)
-    log.SetFormatter(&log.TextFormatter{
-		FullTimestamp: true,
+	log.SetFormatter(&log.TextFormatter{
+		FullTimestamp:   true,
 		TimestampFormat: time.RFC3339Nano,
 	})
 
@@ -218,14 +218,14 @@ func main() {
 	for queue, eventTargets := range targets {
 		for _, eventTarget := range eventTargets {
 			qu := QueueUrl{queue, eventTarget.Url}
-			counters[qu] = CounterVals{0,0,0,0,0}
+			counters[qu] = CounterVals{0, 0, 0, 0, 0}
 			if eventTarget.BufferLen <= 0 {
 				panic("Buffer length must be > 0")
 			}
 			sendPool[qu] = Worker{
-				QueueUrl: qu,
+				QueueUrl:    qu,
 				RequestChan: make(chan RequestMessage, eventTarget.BufferLen),
-				QuitChan: make(chan bool),
+				QuitChan:    make(chan bool),
 			}
 			sendPool[qu].Start()
 		}
@@ -267,21 +267,21 @@ func main() {
 		for {
 			runtime.ReadMemStats(&mem)
 			log.WithFields(log.Fields{
-				"mem.Alloc": mem.Alloc,
-				"mem.TotalAlloc": mem.TotalAlloc,
-				"mem.HeapAlloc": mem.HeapAlloc,
-				"mem.HeapSys": mem.HeapSys,
+				"mem.Alloc":            mem.Alloc,
+				"mem.TotalAlloc":       mem.TotalAlloc,
+				"mem.HeapAlloc":        mem.HeapAlloc,
+				"mem.HeapSys":          mem.HeapSys,
 				"runtime.NumGoroutine": runtime.NumGoroutine(),
 			}).Info("metrics-mem")
-			for cKeys, cVals:= range counters {
+			for cKeys, cVals := range counters {
 				log.WithFields(log.Fields{
-					"queue": cKeys.Queue,
-					"url": cKeys.Url,
+					"queue":   cKeys.Queue,
+					"url":     cKeys.Url,
 					"current": cVals.Current,
-					"total": cVals.Total,
+					"total":   cVals.Total,
 					"success": cVals.Success,
 					"failure": cVals.Failure,
-					"lost": cVals.Lost,
+					"lost":    cVals.Lost,
 					"chanlen": len(sendPool[cKeys].RequestChan),
 					"chanmax": cap(sendPool[cKeys].RequestChan),
 				}).Info("metrics-queue")
@@ -294,7 +294,7 @@ func main() {
 	log.Info("starting server")
 	for queue, _ := range targets {
 		log.Info("registering queue @ /" + queue)
-		http.HandleFunc("/" + queue, handleIncomingEvent)
+		http.HandleFunc("/"+queue, handleIncomingEvent)
 	}
 	http.HandleFunc("/", defaultHandler)
 	err := http.ListenAndServe(":8000", nil)
