@@ -292,7 +292,7 @@ func main() {
 
 	// Oh, hey, there's the webserver!
 	log.Info("starting server")
-	for queue, _ := range targets {
+	for queue := range targets {
 		log.Info("registering queue @ /" + queue)
 		http.HandleFunc("/"+queue, handleIncomingEvent)
 	}
