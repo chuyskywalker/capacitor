@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"github.com/nu7hatch/gouuid"
 	"io/ioutil"
-	//"log"
 	"flag"
 	log "github.com/Sirupsen/logrus"
 	"io"
@@ -16,17 +15,17 @@ import (
 
 type TargetList map[string][]EventTarget
 
-// why not just []string of urls? In case we need meta data for these later on.
+// why not just []string of urls? In case we need meta data for these later on
 type EventTarget struct {
 	// Endpoint target URL
 	Url string
-	// How much buffer should we allocate?
+	// How much channel buffer should we allocate?
 	BufferLen uint64
 }
 
 // Our object used to repeat events.
 // todo: should I just pass the http.Request? Is that thread safe?
-// 		 I feel like the body being an ioreader is kind of a problem -- so most likely not
+// 		 I feel like the body being an io.reader is kind of a problem -- so most likely not
 type RequestMessage struct {
 	UUID    string
 	URL     string
@@ -37,7 +36,7 @@ type RequestMessage struct {
 }
 
 func defaultHandler(w http.ResponseWriter, r *http.Request) {
-	//w.WriteHeader(http.StatusNotFound)
+	w.WriteHeader(http.StatusNotFound)
 	w.Write([]byte("No such event endpoint"))
 }
 
@@ -74,12 +73,14 @@ func handleIncomingEvent(w http.ResponseWriter, r *http.Request) {
 		default:
 			// metricize that we're dropping messages
 			dellchan <- qu
-			// kill off the oldests, not-in-flight message
+			// kill off the oldest, not-in-flight message
+			// todo: it could possibly make sense to kill the inflight message, but...have to think on that more
 			<-sendPool[qu].RequestChan
-			// we attempt to send the current message one last time, but this it no guaranteed to work
+			// we attempt to send the current message one last time, but this it not guaranteed to work
 			select {
 			case sendPool[qu].RequestChan <- requestObj:
 			default:
+				// well, we tried our damndest, log it and move on
 				log.WithFields(log.Fields{
 					"id":    u5,
 					"queue": queue,
@@ -120,18 +121,19 @@ func sendEvent(client *http.Client, qu QueueUrl, req RequestMessage) {
 		}
 
 		// max duration, ever
-		if time.Since(start) > time.Second*10 {
+		// todo: make this configurable
+		if time.Since(start) > time.Second*60 {
 			break
 		}
 
 		// oops, didn't work; have a pause and try again in a bit
 		time.Sleep(sleepDuration)
 
-		// slowly ramp up our sleep interval, shall we? But cap at a minute, thanks.
-		if sleepDuration < time.Duration(time.Minute) {
+		// slowly ramp up our sleep interval, shall we? But cap it too
+		if sleepDuration < time.Duration(time.Second*15) {
 			sleepDuration = time.Duration(float64(sleepDuration) * 1.5)
 		} else {
-			sleepDuration = time.Duration(time.Minute)
+			sleepDuration = time.Duration(time.Second*15)
 		}
 	}
 	elapsed := time.Since(start)
@@ -197,7 +199,6 @@ var sendPool = make(map[QueueUrl]Worker)
 var targets TargetList
 
 func main() {
-	//log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	log.SetFormatter(&log.TextFormatter{
 		FullTimestamp:   true,
 		TimestampFormat: time.RFC3339Nano,

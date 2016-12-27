@@ -1,9 +1,11 @@
 package main
 
-// This here is the meat-n-potatoes of the simple event processor
-// This is a mapping of environment to target list, each target list
-// deontes what endpoints gosep should listen for and where, upon
-// reception, the events should be replayed to.
+// This here is the meat-n-potatoes of the simple event push
+// This starts as a mapping of environment -> target list.
+// Each target list, in turn, denotes a list of valid endpoints
+// and to which gosep should push.
+//
+// The second param in the target is the channel size for buffering
 
 var allTargets = map[string]TargetList{
 	"default": {
