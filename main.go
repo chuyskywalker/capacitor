@@ -2,31 +2,31 @@ package main
 
 import (
 	"bytes"
-	"fmt"
-	"github.com/nu7hatch/gouuid"
-	"io/ioutil"
 	"flag"
+	"fmt"
 	log "github.com/Sirupsen/logrus"
+	"github.com/nu7hatch/gouuid"
 	"io"
+	"io/ioutil"
 	"net/http"
 	"runtime"
 	"time"
 )
 
-type TargetList map[string][]EventTarget
+// targetList is a map of queuenames to targets for mapping events through to other systems
+type targetList map[string][]eventTarget
 
-// why not just []string of urls? In case we need meta data for these later on
-type EventTarget struct {
-	// Endpoint target URL
-	Url string
-	// How much channel buffer should we allocate?
+// eventTarget holds the structure for targets under a targetList
+type eventTarget struct {
+	// URL is the endpoint which an event will be repeated at
+	URL string
+	// BufferLen is how large the chan will be made for this EventTarget
 	BufferLen uint64
 }
 
-// Our object used to repeat events.
-// todo: should I just pass the http.Request? Is that thread safe?
-// 		 I feel like the body being an io.reader is kind of a problem -- so most likely not
-type RequestMessage struct {
+// requestMessage represents an http event to be repeated to eventTargets
+// This is, in essence, an http.Request, but those aren't very clean to pass around
+type requestMessage struct {
 	UUID    string
 	URL     string
 	Method  string
@@ -51,7 +51,7 @@ func handleIncomingEvent(w http.ResponseWriter, r *http.Request) {
 
 	body, _ := ioutil.ReadAll(r.Body)
 
-	requestObj := RequestMessage{
+	requestObj := requestMessage{
 		UUID:    u5.String(),
 		URL:     r.RequestURI,
 		Method:  r.Method,
@@ -65,7 +65,7 @@ func handleIncomingEvent(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "{ \"id\":\"%s\" }\n", u5) // to lazy to do a real json.Marshal, etc
 
 	for _, eventTarget := range targets[queue] {
-		qu := QueueUrl{queue, eventTarget.Url}
+		qu := queueURL{queue, eventTarget.URL}
 		addchan <- qu
 		// this select/case/default is a non-blocking chan push
 		select {
@@ -84,14 +84,14 @@ func handleIncomingEvent(w http.ResponseWriter, r *http.Request) {
 				log.WithFields(log.Fields{
 					"id":    u5,
 					"queue": queue,
-					"url":   eventTarget.Url,
+					"url":   eventTarget.URL,
 				}).Info("queue-full-message-lost")
 			}
 		}
 	}
 }
 
-func sendEvent(client *http.Client, qu QueueUrl, req RequestMessage) {
+func sendEvent(client *http.Client, qu queueURL, req requestMessage) {
 	start := time.Now()
 	var sent bool
 	sent = false
@@ -99,7 +99,7 @@ func sendEvent(client *http.Client, qu QueueUrl, req RequestMessage) {
 	sleepDuration := time.Millisecond * 100
 	for {
 		attempts++
-		httpReq, _ := http.NewRequest(req.Method, qu.Url, bytes.NewBuffer(req.Body))
+		httpReq, _ := http.NewRequest(req.Method, qu.URL, bytes.NewBuffer(req.Body))
 		for headerName, values := range req.Headers {
 			for _, value := range values {
 				httpReq.Header.Add(headerName, value)
@@ -133,7 +133,7 @@ func sendEvent(client *http.Client, qu QueueUrl, req RequestMessage) {
 		if sleepDuration < time.Duration(time.Second*15) {
 			sleepDuration = time.Duration(float64(sleepDuration) * 1.5)
 		} else {
-			sleepDuration = time.Duration(time.Second*15)
+			sleepDuration = time.Duration(time.Second * 15)
 		}
 	}
 	elapsed := time.Since(start)
@@ -147,19 +147,20 @@ func sendEvent(client *http.Client, qu QueueUrl, req RequestMessage) {
 	log.WithFields(log.Fields{
 		"id":       req.UUID,
 		"queue":    qu.Queue,
-		"url":      qu.Url,
+		"url":      qu.URL,
 		"attempts": attempts,
 		"sent":     sent,
 		"duration": elapsed.Seconds() * 1e3, /* ms hack */
 	}).Info("relay-end")
 }
 
-type QueueUrl struct {
+// queueUrl is a structure for uniqu'ifying tracking maps
+type queueURL struct {
 	Queue string
-	Url   string
+	URL   string
 }
 
-type CounterVals struct {
+type counterVals struct {
 	Current uint64
 	Total   uint64
 	Success uint64
@@ -167,19 +168,19 @@ type CounterVals struct {
 	Lost    uint64
 }
 
-var counters = make(map[QueueUrl]CounterVals)
-var addchan = make(chan QueueUrl, 100)
-var deltchan = make(chan QueueUrl, 100)
-var delfchan = make(chan QueueUrl, 100)
-var dellchan = make(chan QueueUrl, 100)
+var counters = make(map[queueURL]counterVals)
+var addchan = make(chan queueURL, 100)
+var deltchan = make(chan queueURL, 100)
+var delfchan = make(chan queueURL, 100)
+var dellchan = make(chan queueURL, 100)
 
-type Worker struct {
-	QueueUrl    QueueUrl
-	RequestChan chan RequestMessage
+type worker struct {
+	QueueURL    queueURL
+	RequestChan chan requestMessage
 	QuitChan    chan bool
 }
 
-func (w Worker) Start() {
+func (w worker) Start() {
 	go func() {
 		client := &http.Client{
 			// todo: reasonable default?
@@ -189,14 +190,14 @@ func (w Worker) Start() {
 		}
 		for {
 			work := <-w.RequestChan
-			sendEvent(client, w.QueueUrl, work)
+			sendEvent(client, w.QueueURL, work)
 		}
 	}()
 }
 
-var sendPool = make(map[QueueUrl]Worker)
+var sendPool = make(map[queueURL]worker)
 
-var targets TargetList
+var targets targetList
 
 func main() {
 	log.SetFormatter(&log.TextFormatter{
@@ -204,11 +205,11 @@ func main() {
 		TimestampFormat: time.RFC3339Nano,
 	})
 
-	configId := flag.String("config", "default", "Which stanza of the config to use")
+	configID := flag.String("config", "default", "Which stanza of the config to use")
 	flag.Parse()
 
 	var ok bool
-	targets, ok = allTargets[*configId]
+	targets, ok = allTargets[*configID]
 	if !ok {
 		panic("Could not load expected configuration")
 	}
@@ -218,14 +219,14 @@ func main() {
 	// reporting 0 immediately for stat collection purposes.
 	for queue, eventTargets := range targets {
 		for _, eventTarget := range eventTargets {
-			qu := QueueUrl{queue, eventTarget.Url}
-			counters[qu] = CounterVals{0, 0, 0, 0, 0}
+			qu := queueURL{queue, eventTarget.URL}
+			counters[qu] = counterVals{0, 0, 0, 0, 0}
 			if eventTarget.BufferLen <= 0 {
 				panic("Buffer length must be > 0")
 			}
-			sendPool[qu] = Worker{
-				QueueUrl:    qu,
-				RequestChan: make(chan RequestMessage, eventTarget.BufferLen),
+			sendPool[qu] = worker{
+				QueueURL:    qu,
+				RequestChan: make(chan requestMessage, eventTarget.BufferLen),
 				QuitChan:    make(chan bool),
 			}
 			sendPool[qu].Start()
@@ -277,7 +278,7 @@ func main() {
 			for cKeys, cVals := range counters {
 				log.WithFields(log.Fields{
 					"queue":   cKeys.Queue,
-					"url":     cKeys.Url,
+					"url":     cKeys.URL,
 					"current": cVals.Current,
 					"total":   cVals.Total,
 					"success": cVals.Success,

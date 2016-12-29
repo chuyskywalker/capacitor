@@ -7,7 +7,7 @@ package main
 //
 // The second param in the target is the channel size for buffering
 
-var allTargets = map[string]TargetList{
+var allTargets = map[string]targetList{
 	"default": {
 		"registration": {
 			{"http://127.0.0.1:8001/brokenville", 1024},
@@ -29,4 +29,3 @@ var allTargets = map[string]TargetList{
 		},
 	},
 }
-
