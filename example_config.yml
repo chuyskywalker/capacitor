@@ -1,0 +1,9 @@
+demo:
+  demo-8001:
+    url: http://127.0.0.1:8001/event-inbound
+    queue_length: 10
+    max_parallel: 1
+  demo-8002:
+    url: http://127.0.0.1:8002/event-inbound
+    queue_length: 10
+    max_parallel: 5

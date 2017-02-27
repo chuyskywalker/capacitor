@@ -9,20 +9,23 @@ import (
 	"io"
 	"io/ioutil"
 	"net/http"
-	"runtime"
 	"time"
+	"gopkg.in/yaml.v2"
+	"os"
+	"strconv"
+	"encoding/json"
 )
 
-// targetList is a map of queuenames to targets for mapping events through to other systems
-type targetList map[string][]eventTarget
-
-// eventTarget holds the structure for targets under a targetList
-type eventTarget struct {
-	// URL is the endpoint which an event will be repeated at
-	URL string
-	// BufferLen is how large the chan will be made for this EventTarget
-	BufferLen uint64
+// yaml config ingestion structures
+type QueueInfo struct {
+	URL         string  `yaml:"url"`
+	QueueLength uint    `yaml:"queue_length"`
+	MaxParallel uint    `yaml:"max_parallel"`
 }
+type QueueItems map[string]QueueInfo
+type Config map[string]QueueItems
+
+var config Config
 
 // requestMessage represents an http event to be repeated to eventTargets
 // This is, in essence, an http.Request, but those aren't very clean to pass around
@@ -37,15 +40,30 @@ type requestMessage struct {
 
 func defaultHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotFound)
-	w.Write([]byte("No such event endpoint"))
+	w.Write([]byte("No such inbound endpoint"))
 }
 
-func handleIncomingEvent(w http.ResponseWriter, r *http.Request) {
+func metricsHandler(w http.ResponseWriter, r *http.Request) {
+	mapB, err := json.Marshal(counters)
+	if err != nil {
+		log.WithFields(log.Fields{
+			"error": err.Error(),
+		}).Error("cant-marshall")
+		return
+	} else {
+		log.Debug("Marshalled just fine")
+	}
+	w.Write(mapB)
+}
+
+func handleIncoming(w http.ResponseWriter, r *http.Request) {
 
 	// get a UUID for this transaction
 	u5, err := uuid.NewV4()
 	if err != nil {
-		fmt.Println("error:", err)
+		log.WithFields(log.Fields{
+			"error": err.Error(),
+		}).Error("failed-to-generate-uuid")
 		return
 	}
 
@@ -53,32 +71,32 @@ func handleIncomingEvent(w http.ResponseWriter, r *http.Request) {
 
 	requestObj := requestMessage{
 		UUID:    u5.String(),
-		URL:     r.RequestURI,
+		URL:     r.URL.Path[1:], // trim the leading /
 		Method:  r.Method,
 		Source:  r.RemoteAddr,
 		Headers: r.Header,
 		Body:    body,
 	}
 
-	queue := requestObj.URL[1:]
+	queue := requestObj.URL
 
 	fmt.Fprintf(w, "{ \"id\":\"%s\" }\n", u5) // to lazy to do a real json.Marshal, etc
 
-	for _, eventTarget := range targets[queue] {
-		qu := queueURL{queue, eventTarget.URL}
+	for name, eventTarget := range config[queue] {
+		qu := Queue{queue, name,eventTarget.URL}
 		addchan <- qu
 		// this select/case/default is a non-blocking chan push
 		select {
-		case sendPool[qu].RequestChan <- requestObj:
+		case requestBuffers[qu] <- requestObj:
 		default:
 			// metricize that we're dropping messages
 			dellchan <- qu
 			// kill off the oldest, not-in-flight message
 			// todo: it could possibly make sense to kill the inflight message, but...have to think on that more
-			<-sendPool[qu].RequestChan
-			// we attempt to send the current message one last time, but this it not guaranteed to work
+			<-requestBuffers[qu]
+			// we attempt to send the current message one last time, but this is still not guaranteed to work
 			select {
-			case sendPool[qu].RequestChan <- requestObj:
+			case requestBuffers[qu] <- requestObj:
 			default:
 				// well, we tried our damndest, log it and move on
 				log.WithFields(log.Fields{
@@ -91,7 +109,14 @@ func handleIncomingEvent(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func sendEvent(client *http.Client, qu queueURL, req requestMessage) {
+func sendEvent(client *http.Client, qu Queue, req requestMessage, workerId uint) {
+
+	log.WithFields(log.Fields{
+		"queue": qu,
+		"req": req,
+		"wid": workerId,
+	}).Debug("sending")
+
 	start := time.Now()
 	var sent bool
 	sent = false
@@ -99,13 +124,13 @@ func sendEvent(client *http.Client, qu queueURL, req requestMessage) {
 	sleepDuration := time.Millisecond * 100
 	for {
 		attempts++
-		httpReq, _ := http.NewRequest(req.Method, qu.URL, bytes.NewBuffer(req.Body))
+		httpReq, _ := http.NewRequest(req.Method, qu.OutboundURL, bytes.NewBuffer(req.Body))
 		for headerName, values := range req.Headers {
 			for _, value := range values {
 				httpReq.Header.Add(headerName, value)
 			}
 		}
-		httpReq.Header.Set("X-Wsq-Id", req.UUID)
+		httpReq.Header.Set("X-Capacitor-Id", req.UUID)
 		resp, err := client.Do(httpReq)
 
 		if err == nil {
@@ -146,8 +171,9 @@ func sendEvent(client *http.Client, qu queueURL, req requestMessage) {
 
 	log.WithFields(log.Fields{
 		"id":       req.UUID,
-		"queue":    qu.Queue,
-		"url":      qu.URL,
+		"queue":    qu.InboundName,
+		"outbound": qu.OutboundName,
+		"wid":      workerId,
 		"attempts": attempts,
 		"sent":     sent,
 		"duration": elapsed.Seconds() * 1e3, /* ms hack */
@@ -155,49 +181,51 @@ func sendEvent(client *http.Client, qu queueURL, req requestMessage) {
 }
 
 // queueUrl is a structure for uniqu'ifying tracking maps
-type queueURL struct {
-	Queue string
-	URL   string
+type Queue struct {
+	InboundName  string
+	OutboundName string
+	OutboundURL  string
 }
 
 type counterVals struct {
-	Current uint64
-	Total   uint64
-	Success uint64
-	Failure uint64
-	Lost    uint64
+	Current uint64 `json:"current"`
+	Total   uint64 `json:"total"`
+	Success uint64 `json:"success"`
+	Failure uint64 `json:"failure"`
+	Lost    uint64 `json:"lost"`
 }
 
-var counters = make(map[queueURL]counterVals)
-var addchan = make(chan queueURL, 100)
-var deltchan = make(chan queueURL, 100)
-var delfchan = make(chan queueURL, 100)
-var dellchan = make(chan queueURL, 100)
-
-type worker struct {
-	QueueURL    queueURL
-	RequestChan chan requestMessage
-	QuitChan    chan bool
+func (u StatsMap) MarshalJSON() ([]byte, error) {
+	fmt.Println("marshalling StatsMap")
+	var v = make(map[string]counterVals)
+	for i, e := range u {
+		v[i.InboundName+ ":" + i.OutboundName] = e
+	}
+	return json.Marshal(v)
 }
 
-func (w worker) Start() {
-	go func() {
-		client := &http.Client{
-			// todo: reasonable default?
-			Timeout: 10 * time.Second,
-			// no cookies, please
-			Jar: nil,
-		}
-		for {
-			work := <-w.RequestChan
-			sendEvent(client, w.QueueURL, work)
-		}
-	}()
+type StatsMap map[Queue]counterVals
+
+var counters = make(StatsMap)
+var addchan = make(chan Queue, 100)
+var deltchan = make(chan Queue, 100)
+var delfchan = make(chan Queue, 100)
+var dellchan = make(chan Queue, 100)
+
+func StartWorker(incoming chan requestMessage, queue Queue, id uint) {
+	client := &http.Client{
+		// todo: reasonable default?
+		Timeout: 10 * time.Second,
+		// no cookies, please
+		Jar: nil,
+	}
+	for {
+		work := <-incoming
+		sendEvent(client, queue, work, id)
+	}
 }
 
-var sendPool = make(map[queueURL]worker)
-
-var targets targetList
+var requestBuffers = make(map[Queue]chan requestMessage)
 
 func main() {
 	log.SetFormatter(&log.TextFormatter{
@@ -205,31 +233,45 @@ func main() {
 		TimestampFormat: time.RFC3339Nano,
 	})
 
-	configID := flag.String("config", "default", "Which stanza of the config to use")
+	configFile := flag.String("config", "config.yml", "Path to the config file")
+	debug := flag.Bool("debug", false, "Enable debug logging")
+	port := flag.Uint("port", uint(8000), "Listen port")
 	flag.Parse()
 
-	var ok bool
-	targets, ok = allTargets[*configID]
-	if !ok {
-		panic("Could not load expected configuration")
+	if *debug {
+		log.SetLevel(log.DebugLevel)
 	}
 
-	// initialize counters to zero
-	// You don't _have_ to do this, but I like having all the counters
-	// reporting 0 immediately for stat collection purposes.
-	for queue, eventTargets := range targets {
-		for _, eventTarget := range eventTargets {
-			qu := queueURL{queue, eventTarget.URL}
+	if _, err := os.Stat(*configFile); os.IsNotExist(err) {
+		log.Errorf("Config must be specified and must exist: %s", *configFile)
+		os.Exit(1)
+	}
+
+	yamlFile, err := ioutil.ReadFile(*configFile)
+	if err != nil {
+		panic(err)
+	}
+
+	err = yaml.Unmarshal(yamlFile, &config)
+	if err != nil {
+		panic(err)
+	}
+
+	// TODO: add config file validation, such as:
+	//if target.QueueLength <= 0 {
+	//	panic("Buffer length must be > 0")
+	//}
+	// TODO: `/api` is reserved as a root for the app
+
+	// Setup workers and initialize counters to zero
+	for inbound, targets := range config {
+		for targetid, target := range targets {
+			qu := Queue{inbound, targetid, target.URL}
 			counters[qu] = counterVals{0, 0, 0, 0, 0}
-			if eventTarget.BufferLen <= 0 {
-				panic("Buffer length must be > 0")
+			requestBuffers[qu] = make(chan requestMessage, target.QueueLength)
+			for i := uint(1); i <= target.MaxParallel; i++ {
+				go StartWorker(requestBuffers[qu], qu, i)
 			}
-			sendPool[qu] = worker{
-				QueueURL:    qu,
-				RequestChan: make(chan requestMessage, eventTarget.BufferLen),
-				QuitChan:    make(chan bool),
-			}
-			sendPool[qu].Start()
 		}
 	}
 
@@ -264,44 +306,15 @@ func main() {
 	}()
 
 	// A dumb goroutine to watch memory usage and counter metrics
-	go func() {
-		var mem runtime.MemStats
-		for {
-			runtime.ReadMemStats(&mem)
-			log.WithFields(log.Fields{
-				"mem.Alloc":            mem.Alloc,
-				"mem.TotalAlloc":       mem.TotalAlloc,
-				"mem.HeapAlloc":        mem.HeapAlloc,
-				"mem.HeapSys":          mem.HeapSys,
-				"runtime.NumGoroutine": runtime.NumGoroutine(),
-			}).Info("metrics-mem")
-			for cKeys, cVals := range counters {
-				log.WithFields(log.Fields{
-					"queue":   cKeys.Queue,
-					"url":     cKeys.URL,
-					"current": cVals.Current,
-					"total":   cVals.Total,
-					"success": cVals.Success,
-					"failure": cVals.Failure,
-					"lost":    cVals.Lost,
-					"chanlen": len(sendPool[cKeys].RequestChan),
-					"chanmax": cap(sendPool[cKeys].RequestChan),
-				}).Info("metrics-queue")
-			}
-			time.Sleep(time.Second * 5)
-		}
-	}()
+	go memstats()
 
 	// Oh, hey, there's the webserver!
 	log.Info("starting server")
-	for queue := range targets {
-		log.Info("registering queue @ /" + queue)
-		http.HandleFunc("/"+queue, handleIncomingEvent)
+	for inbound := range config {
+		log.Info("registering queue @ /" + inbound)
+		http.HandleFunc("/"+inbound, handleIncoming)
 	}
 	http.HandleFunc("/", defaultHandler)
-	err := http.ListenAndServe(":8000", nil)
-	if err != nil {
-		log.Fatal("ListenAndServe: ", err)
-	}
-
+	http.HandleFunc("/api/metrics", metricsHandler)
+	log.Fatal("ListenAndServe: ", http.ListenAndServe(":" + strconv.Itoa(int(*port)), nil))
 }
