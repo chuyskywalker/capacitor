@@ -1,7 +1,7 @@
 # ⊣⊢ Capacitor
 > HTTP request repeater
 
-Capcitor is a queue-based, HTTP request forwarding agent. It can be used like an Event pub/sub system or as a background job processing queue.
+Capacitor is a queue-based, HTTP request forwarding agent. It can be used like an Event pub/sub system or as a background job processing queue.
 
 ## Basic Install
 
