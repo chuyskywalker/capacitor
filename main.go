@@ -2,25 +2,25 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"flag"
 	"fmt"
 	log "github.com/Sirupsen/logrus"
 	"github.com/nu7hatch/gouuid"
+	"gopkg.in/yaml.v2"
 	"io"
 	"io/ioutil"
 	"net/http"
-	"time"
-	"gopkg.in/yaml.v2"
 	"os"
 	"strconv"
-	"encoding/json"
+	"time"
 )
 
 // yaml config ingestion structures
 type QueueInfo struct {
-	URL         string  `yaml:"url"`
-	QueueLength uint    `yaml:"queue_length"`
-	MaxParallel uint    `yaml:"max_parallel"`
+	URL         string `yaml:"url"`
+	QueueLength uint   `yaml:"queue_length"`
+	MaxParallel uint   `yaml:"max_parallel"`
 }
 type QueueItems map[string]QueueInfo
 type Config map[string]QueueItems
@@ -83,7 +83,7 @@ func handleIncoming(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "{ \"id\":\"%s\" }\n", u5) // to lazy to do a real json.Marshal, etc
 
 	for name, eventTarget := range config[queue] {
-		qu := Queue{queue, name,eventTarget.URL}
+		qu := Queue{queue, name, eventTarget.URL}
 		addchan <- qu
 		// this select/case/default is a non-blocking chan push
 		select {
@@ -113,8 +113,8 @@ func sendEvent(client *http.Client, qu Queue, req requestMessage, workerId uint)
 
 	log.WithFields(log.Fields{
 		"queue": qu,
-		"req": req,
-		"wid": workerId,
+		"req":   req,
+		"wid":   workerId,
 	}).Debug("sending")
 
 	start := time.Now()
@@ -199,7 +199,7 @@ func (u StatsMap) MarshalJSON() ([]byte, error) {
 	fmt.Println("marshalling StatsMap")
 	var v = make(map[string]counterVals)
 	for i, e := range u {
-		v[i.InboundName+ ":" + i.OutboundName] = e
+		v[i.InboundName+":"+i.OutboundName] = e
 	}
 	return json.Marshal(v)
 }
@@ -316,5 +316,5 @@ func main() {
 	}
 	http.HandleFunc("/", defaultHandler)
 	http.HandleFunc("/api/metrics", metricsHandler)
-	log.Fatal("ListenAndServe: ", http.ListenAndServe(":" + strconv.Itoa(int(*port)), nil))
+	log.Fatal("ListenAndServe: ", http.ListenAndServe(":"+strconv.Itoa(int(*port)), nil))
 }
