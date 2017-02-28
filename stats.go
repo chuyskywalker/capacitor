@@ -6,7 +6,7 @@ import (
 	log "github.com/Sirupsen/logrus"
 )
 
-func memstats() {
+func stats() {
 	var mem runtime.MemStats
 	for {
 		runtime.ReadMemStats(&mem)

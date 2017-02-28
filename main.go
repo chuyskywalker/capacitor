@@ -306,7 +306,7 @@ func main() {
 	}()
 
 	// A dumb goroutine to watch memory usage and counter metrics
-	go memstats()
+	go stats()
 
 	// Oh, hey, there's the webserver!
 	log.Info("starting server")
