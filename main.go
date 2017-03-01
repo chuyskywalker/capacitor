@@ -5,27 +5,17 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	log "github.com/Sirupsen/logrus"
-	"github.com/nu7hatch/gouuid"
-	"gopkg.in/yaml.v2"
 	"io"
 	"io/ioutil"
 	"net/http"
 	"os"
 	"strconv"
 	"time"
+
+	log "github.com/Sirupsen/logrus"
+	"github.com/nu7hatch/gouuid"
+	"gopkg.in/yaml.v2"
 )
-
-// yaml config ingestion structures
-type QueueInfo struct {
-	URL         string `yaml:"url"`
-	QueueLength uint   `yaml:"queue_length"`
-	MaxParallel uint   `yaml:"max_parallel"`
-}
-type QueueItems map[string]QueueInfo
-type Config map[string]QueueItems
-
-var config Config
 
 // requestMessage represents an http event to be repeated to eventTargets
 // This is, in essence, an http.Request, but those aren't very clean to pass around
@@ -40,73 +30,83 @@ type requestMessage struct {
 
 func defaultHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotFound)
-	w.Write([]byte("No such inbound endpoint"))
+	fmt.Fprint(w, "{ \"error\": \"No such queue\" }\n")
 }
 
 func metricsHandler(w http.ResponseWriter, r *http.Request) {
-	mapB, err := json.Marshal(counters)
-	if err != nil {
-		log.WithFields(log.Fields{
-			"error": err.Error(),
-		}).Error("cant-marshall")
-		return
-	} else {
-		log.Debug("Marshalled just fine")
-	}
+	mapB, _ := json.Marshal(counters) // meh @ error handling here :)
 	w.Write(mapB)
 }
 
-func handleIncoming(w http.ResponseWriter, r *http.Request) {
+func makeIncomingHandler(queueItems QueueItems) http.HandlerFunc {
+	// I'm doing it like this so my IDE highlighting doesn't get stupid
+	h := func(w http.ResponseWriter, r *http.Request) {
+		// get a UUID for this transaction
+		u5, err := uuid.NewV4()
+		if err != nil {
+			log.WithFields(log.Fields{
+				"error": err.Error(),
+			}).Error("failed-to-generate-uuid")
+			return
+		}
 
-	// get a UUID for this transaction
-	u5, err := uuid.NewV4()
-	if err != nil {
-		log.WithFields(log.Fields{
-			"error": err.Error(),
-		}).Error("failed-to-generate-uuid")
-		return
-	}
+		body, _ := ioutil.ReadAll(r.Body)
 
-	body, _ := ioutil.ReadAll(r.Body)
+		requestObj := requestMessage{
+			UUID:    u5.String(),
+			URL:     r.URL.Path[1:], // trim the leading /
+			Method:  r.Method,
+			Source:  r.RemoteAddr,
+			Headers: r.Header,
+			Body:    body,
+		}
 
-	requestObj := requestMessage{
-		UUID:    u5.String(),
-		URL:     r.URL.Path[1:], // trim the leading /
-		Method:  r.Method,
-		Source:  r.RemoteAddr,
-		Headers: r.Header,
-		Body:    body,
-	}
+		queue := requestObj.URL
+		var worked int
+		worked = 1
 
-	queue := requestObj.URL
-
-	fmt.Fprintf(w, "{ \"id\":\"%s\" }\n", u5) // to lazy to do a real json.Marshal, etc
-
-	for name, eventTarget := range config[queue] {
-		qu := Queue{queue, name, eventTarget.URL}
-		addchan <- qu
-		// this select/case/default is a non-blocking chan push
-		select {
-		case requestBuffers[qu] <- requestObj:
-		default:
-			// metricize that we're dropping messages
-			dellchan <- qu
-			// kill off the oldest, not-in-flight message
-			// todo: it could possibly make sense to kill the inflight message, but...have to think on that more
-			<-requestBuffers[qu]
-			// we attempt to send the current message one last time, but this is still not guaranteed to work
+		for name, eventTarget := range queueItems {
+			qu := Queue{queue, name, eventTarget.URL}
+			addchan <- qu
+			// this select/case/default is a non-blocking chan push
 			select {
 			case requestBuffers[qu] <- requestObj:
 			default:
-				// well, we tried our damndest, log it and move on
-				log.WithFields(log.Fields{
-					"id":    u5,
-					"queue": queue,
-					"url":   eventTarget.URL,
-				}).Info("queue-full-message-lost")
+				// metricize that we're dropping messages
+				dellchan <- qu
+				// kill off the oldest, not-in-flight message
+				worked = 2
+				// todo: it could possibly make sense to kill the inflight message, but...have to think on that more
+				<-requestBuffers[qu]
+				// we attempt to send the current message one last time, but this is still not guaranteed to work
+				select {
+				case requestBuffers[qu] <- requestObj:
+				default:
+					worked = 3
+					// well, we tried our damndest, log it and move on
+					log.WithFields(log.Fields{
+						"id":    u5,
+						"queue": queue,
+						"url":   eventTarget.URL,
+					}).Info("queue-full-message-lost")
+				}
 			}
 		}
+
+		// to lazy to do a real json.Marshal, etc
+		switch worked {
+		case 1:
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprintf(w, "{ \"id\":\"%s\" }\n", u5)
+		case 2:
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprintf(w, "{ \"id\":\"%s\", \"error\": \"Queue full, old message dropped\" }\n", u5)
+		case 3:
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprintf(w, "{ \"id\":\"%s\", \"error\": \"Queue full, old message dropped, new message un-queued\" }\n", u5)
+		}
 	}
+	return h
 }
 
 func sendEvent(client *http.Client, qu Queue, req requestMessage, workerId uint) {
@@ -252,6 +252,7 @@ func main() {
 		panic(err)
 	}
 
+	var config Config
 	err = yaml.Unmarshal(yamlFile, &config)
 	if err != nil {
 		panic(err)
@@ -309,12 +310,13 @@ func main() {
 	go stats()
 
 	// Oh, hey, there's the webserver!
-	log.Info("starting server")
-	for inbound := range config {
-		log.Info("registering queue @ /" + inbound)
-		http.HandleFunc("/"+inbound, handleIncoming)
+	portStr := strconv.Itoa(int(*port))
+	log.Info("Starting server on port "+portStr)
+	for inbound, queueItems := range config {
+		log.Info("Registering queue @ /" + inbound)
+		http.HandleFunc("/"+inbound, makeIncomingHandler(queueItems))
 	}
 	http.HandleFunc("/", defaultHandler)
 	http.HandleFunc("/api/metrics", metricsHandler)
-	log.Fatal("ListenAndServe: ", http.ListenAndServe(":"+strconv.Itoa(int(*port)), nil))
+	log.Fatal("ListenAndServe: ", http.ListenAndServe(":"+portStr, nil))
 }
