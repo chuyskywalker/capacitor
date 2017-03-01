@@ -7,10 +7,11 @@ package main
  */
 
 import (
-	log "github.com/Sirupsen/logrus"
 	"io/ioutil"
 	"net/http"
 	"time"
+
+	log "github.com/Sirupsen/logrus"
 )
 
 func getEvent(w http.ResponseWriter, r *http.Request, port int) {
@@ -24,12 +25,14 @@ func getEvent(w http.ResponseWriter, r *http.Request, port int) {
 	w.Write([]byte("Thanks!"))
 }
 
-type srv8001 struct {}
+type srv8001 struct{}
+
 func (m *srv8001) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	getEvent(w, r, 8001)
 }
 
-type srv8002 struct {}
+type srv8002 struct{}
+
 func (m *srv8002) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	getEvent(w, r, 8002)
 }

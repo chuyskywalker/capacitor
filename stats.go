@@ -1,9 +1,10 @@
 package main
 
 import (
-	log "github.com/Sirupsen/logrus"
 	"runtime"
 	"time"
+
+	log "github.com/Sirupsen/logrus"
 )
 
 func stats() {
