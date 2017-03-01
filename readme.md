@@ -8,25 +8,29 @@ Capacitor is a queue-based, HTTP request forwarding agent. It can be used like a
 Install and run the application:
 ```bash
 go install github.com/chuyskywalker/capacitor
-$GOPATH/bin/capacitor -config example_config.yml
+$GOPATH/bin/capacitor -config $GOPATH/src/github.com/chuyskywalker/capacitor/config.yml
 ```
 
 ### Demo
 
-You'll need 2 more terminals:
+You'll need 3 more terminals:
 
 ```
-# Terminal 1, run a demo agent which will emulate two services
-go run demo/demo.go
+# Terminal 1, run a demo web app to accept requests
+go build -o demo/demo demo/demo.go
+./demo/demo 8001
 
-# Terminal 2
+# Terminal 2, a second app
+./demo/demo 8002
+
+# Terminal 3
 # Nothing, we'll curl from here
 ```
 
 Now, let's ping the receivers to test:
 
 ```
-# Terminal 2
+# Terminal 3
 curl -s -X POST -d "12345678" http://127.0.0.1:8001/
 curl -s -X POST -d "12345678" http://127.0.0.1:8002/
 ```
