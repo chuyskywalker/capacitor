@@ -88,3 +88,56 @@ This does come with the side effect that, for a short duration, you will have mo
 It does not. `Capacitor` does not cache events to multiple agents across a network divide, and if you wanted to think about running multiple instance from a CAP perspective, it would operate as AP. Running multiple instanecs and balancing traffic between them will provide horizontal scalability, but losing a node means all messages on that node are gone as `Capacitor` is not durable in any fashion.
 
 The other thing you'd need to watch out for is that you'll want to distribute `max_parallel` among the agents. For example, if you ultimately desire `max_parallel=15` and you have 3 agents, you must tune each config to `max_parallel=5`.
+
+## Lies, Damned Lies, and Benchmarks
+
+Yes, yes, we all know benchmarks are bogus-ish. Here's one anyway.
+
+My machine: `i7-4790k @ 4ghz, 16GB ram`
+
+Config:
+
+```yaml
+demo:
+  demo-8001:
+    url: http://127.0.0.1:8001/event-inbound
+    queue_length: 100000
+    max_parallel: 16
+  demo-8002:
+    url: http://127.0.0.1:8002/event-inbound
+    queue_length: 100000
+    max_parallel: 16
+  demo-8003:
+    url: http://127.0.0.1:8003/event-inbound
+    queue_length: 100000
+    max_parallel: 16
+  demo-8004:
+    url: http://127.0.0.1:8004/event-inbound
+    queue_length: 100000
+    max_parallel: 16
+  demo-8005:
+    url: http://127.0.0.1:8005/event-inbound
+    queue_length: 100000
+    max_parallel: 16
+```
+
+Terminal with running demo apps to match. Compiled the `push/push.go` program. Run `push 4 10000`. Results:
+
+```
+Elapsed: 10.5364777s
+
+real    0m10.572s
+user    0m0.000s
+sys     0m0.000s
+```
+
+Rough metrics work out to taking in about 3,800 messages per second and divying out 19,000 msg/s.  
+
+```
+push 4 10000 == 40,000 source messages
+x 5 targets == 200,000 delivered messages
+time: 10.5s
+metrics:
+   ~3,800 inbound/s
+  ~19,000 outbound/s
+```
