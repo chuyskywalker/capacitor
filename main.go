@@ -62,9 +62,6 @@ func makeIncomingHandler(queueItems QueueItems) http.HandlerFunc {
 		}
 
 		queue := requestObj.URL
-		var worked int
-		worked = 1
-
 		for name, eventTarget := range queueItems {
 			qu := Queue{queue, name, eventTarget.URL}
 			addchan <- qu
@@ -75,14 +72,12 @@ func makeIncomingHandler(queueItems QueueItems) http.HandlerFunc {
 				// metricize that we're dropping messages
 				dellchan <- qu
 				// kill off the oldest, not-in-flight message
-				worked = 2
 				// todo: it could possibly make sense to kill the inflight message, but...have to think on that more
 				<-requestBuffers[qu]
 				// we attempt to send the current message one last time, but this is still not guaranteed to work
 				select {
 				case requestBuffers[qu] <- requestObj:
 				default:
-					worked = 3
 					// well, we tried our damndest, log it and move on
 					log.WithFields(log.Fields{
 						"id":    u5,
@@ -94,17 +89,8 @@ func makeIncomingHandler(queueItems QueueItems) http.HandlerFunc {
 		}
 
 		// to lazy to do a real json.Marshal, etc
-		switch worked {
-		case 1:
-			w.WriteHeader(http.StatusOK)
-			fmt.Fprintf(w, "{ \"id\":\"%s\" }\n", u5)
-		case 2:
-			w.WriteHeader(http.StatusInternalServerError)
-			fmt.Fprintf(w, "{ \"id\":\"%s\", \"error\": \"Queue full, old message dropped\" }\n", u5)
-		case 3:
-			w.WriteHeader(http.StatusInternalServerError)
-			fmt.Fprintf(w, "{ \"id\":\"%s\", \"error\": \"Queue full, old message dropped, new message un-queued\" }\n", u5)
-		}
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "{ \"id\":\"%s\" }\n", u5)
 	}
 	return h
 }
