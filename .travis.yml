@@ -13,7 +13,8 @@ script:
 after_success:
   - go get github.com/tcnksm/ghr
   - go get github.com/mitchellh/gox
-  - gox -output "dist/{{.OS}}_{{.Arch}}_{{.Dir}}"
+  - gox -output "dist/{{.Dir}}_{{.OS}}_{{.Arch}}"
+  - cd dist; for i in *; do zip -v $i.zip $i; rm $i; done
 
 deploy:
   - provider: script
@@ -22,7 +23,7 @@ deploy:
     on:
       tags: true
   - provider: script
-    script: ghr --username chuyskywalker --token $GITHUB_TOKEN --replace pre-release dist/
+    script: ghr --username chuyskywalker --token $GITHUB_TOKEN --recreate pre-release dist/
     skip_cleanup: true
     on:
       branch: master
