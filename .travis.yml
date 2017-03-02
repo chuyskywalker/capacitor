@@ -10,14 +10,19 @@ script:
   - go test -v ./...
   - go vet
 
+after_success:
+  - go get github.com/tcnksm/ghr
+  - go get github.com/mitchellh/gox
+  - gox -output "dist/{{.OS}}_{{.Arch}}_{{.Dir}}"
+
 deploy:
-  # Release a tagged version
   - provider: script
-    script: scripts/tag-deploy.sh
+    script: ghr --username chuyskywalker --token $GITHUB_TOKEN --replace $TRAVIS_TAG dist/
+    skip_cleanup: true
     on:
       tags: true
-  # Update the "pre-release" version
   - provider: script
-    script: scripts/pre-release.sh
+    script: ghr --username chuyskywalker --token $GITHUB_TOKEN --replace pre-release dist/
+    skip_cleanup: true
     on:
       branch: master
