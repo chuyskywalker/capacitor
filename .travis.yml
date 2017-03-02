@@ -6,14 +6,18 @@ go:
 env:
   - "PATH=/home/travis/gopath/bin:$PATH"
 
-before_install:
- - go get github.com/mitchellh/gox
- - go get github.com/tcnksm/ghr
-
 script:
- - go test -v ./...
- - go vet
+  - go test -v ./...
+  - go vet
 
-after_success:
- - gox -output "dist/{{.OS}}_{{.Arch}}_{{.Dir}}"
- - ghr --username chuyskywalker --token $GITHUB_TOKEN --replace --prerelease --debug pre-release dist/
+deploy:
+  # Release a tagged version
+  - provider: script
+    script: scripts/tag-deploy.sh
+    on:
+      tags: true
+  # Update the "pre-release" version
+  - provider: script
+    script: scripts/pre-release.sh
+    on:
+      branch: master
